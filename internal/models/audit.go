@@ -2,6 +2,112 @@ package models
 
 import "time"
 
+// SpanType represents the type of span in an agentic workflow
+type SpanType string
+
+const (
+	// SpanTypeUserPrompt: Initial user input to the agent
+	SpanTypeUserPrompt SpanType = "USER_PROMPT"
+
+	// SpanTypeAgentThinking: LLM reasoning/planning phase
+	SpanTypeAgentThinking SpanType = "AGENT_THINKING"
+
+	// SpanTypeToolCall: Agent requests a tool execution
+	SpanTypeToolCall SpanType = "TOOL_CALL"
+
+	// SpanTypeToolResult: Result returned from tool execution
+	SpanTypeToolResult SpanType = "TOOL_RESULT"
+
+	// SpanTypeFinalResponse: Agent's final response to user
+	SpanTypeFinalResponse SpanType = "FINAL_RESPONSE"
+
+	// SpanTypeError: Error occurred during workflow
+	SpanTypeError SpanType = "ERROR"
+)
+
+// TraceContext provides distributed tracing metadata for reconstructing agentic workflows
+type TraceContext struct {
+	// TraceID is the unique identifier for the entire user session or conversation
+	// Format: 32-character hex string (128-bit UUID)
+	// Example: "4bf92f3577b34da6a3ce929d0e0e4736"
+	// Propagated via X-Trace-ID header or auto-generated
+	TraceID string `json:"trace_id,omitempty"`
+
+	// SpanID is the unique identifier for this specific request/response pair
+	// Format: 16-character hex string (64-bit)
+	// Example: "00f067aa0ba902b7"
+	SpanID string `json:"span_id,omitempty"`
+
+	// ParentSpanID references the SpanID that triggered this request
+	// Empty for root spans (initial user prompts)
+	ParentSpanID string `json:"parent_span_id,omitempty"`
+
+	// SpanType categorizes the role of this span in the workflow
+	SpanType SpanType `json:"span_type,omitempty"`
+
+	// SpanName is a human-readable description
+	// Examples: "user_prompt", "get_weather_tool", "final_response"
+	SpanName string `json:"span_name,omitempty"`
+
+	// ToolCall contains structured tool calling information (OpenAI format)
+	ToolCall *ToolCallInfo `json:"tool_call,omitempty"`
+
+	// ToolResult contains structured tool result information
+	ToolResult *ToolResultInfo `json:"tool_result,omitempty"`
+
+	// Attributes contains additional span metadata
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
+// ToolCallInfo represents a tool invocation by the agent (OpenAI format)
+type ToolCallInfo struct {
+	// ID is the unique identifier for this tool call
+	// Format: OpenAI "call_" prefix (e.g., "call_abc123")
+	ID string `json:"id"`
+
+	// Type is the tool call type (typically "function")
+	Type string `json:"type"`
+
+	// Function contains the function call details
+	Function FunctionCall `json:"function"`
+
+	// Index is the position in the tool_calls array (for multiple parallel calls)
+	Index int `json:"index,omitempty"`
+}
+
+// FunctionCall represents a function invocation
+type FunctionCall struct {
+	// Name is the function/tool name
+	// Example: "get_weather", "web_search"
+	Name string `json:"name"`
+
+	// Arguments is the JSON-encoded function arguments
+	// Example: "{\"city\": \"London\", \"units\": \"celsius\"}"
+	Arguments string `json:"arguments"`
+
+	// ArgumentsHash is SHA256(Arguments) for integrity verification
+	ArgumentsHash string `json:"arguments_hash"`
+}
+
+// ToolResultInfo represents the result of a tool execution
+type ToolResultInfo struct {
+	// ToolCallID links this result to the tool call that triggered it
+	// Must match ToolCallInfo.ID from the parent TOOL_CALL span
+	ToolCallID string `json:"tool_call_id"`
+
+	// Content is the tool's output
+	Content string `json:"content"`
+
+	// ContentHash is SHA256(Content) for integrity verification
+	ContentHash string `json:"content_hash"`
+
+	// IsError indicates if the tool execution failed
+	IsError bool `json:"is_error,omitempty"`
+
+	// ErrorMessage contains error details if IsError is true
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
 // MediaReference represents an extracted media file that was offloaded from the audit log
 type MediaReference struct {
 	// Type is the media type (e.g., "image/png", "image/jpeg")
@@ -49,6 +155,10 @@ type AuditEntry struct {
 	// Hash is the SHA-256 hash of this entry
 	// Computed as: SHA256(Timestamp + Endpoint + RequestBody + ResponseBody + StatusCode + PrevHash)
 	Hash string `json:"hash"`
+
+	// Trace contains distributed tracing metadata for agentic workflows
+	// Optional field - maintains backward compatibility when omitted
+	Trace *TraceContext `json:"trace,omitempty"`
 }
 
 // RequestDetails captures all relevant information about the incoming request

@@ -152,7 +152,7 @@ func (w *Worker) processEntry(entry *models.AuditEntry) {
 }
 
 // computeHash generates the SHA-256 hash for an audit entry
-// Hash = SHA256(Timestamp + Endpoint + RequestBody + ResponseBody + StatusCode + Error + IsComplete + PrevHash)
+// Hash = SHA256(Timestamp + Endpoint + RequestBody + ResponseBody + StatusCode + Error + IsComplete + TraceContext + PrevHash)
 func (w *Worker) computeHash(entry *models.AuditEntry) string {
 	h := sha256.New()
 
@@ -164,6 +164,31 @@ func (w *Worker) computeHash(entry *models.AuditEntry) string {
 	h.Write([]byte(strconv.Itoa(entry.Response.StatusCode)))
 	h.Write([]byte(entry.Response.Error))
 	h.Write([]byte(strconv.FormatBool(entry.Response.IsComplete)))
+
+	// Include trace context if present (maintains backward compatibility)
+	if entry.Trace != nil {
+		h.Write([]byte(entry.Trace.TraceID))
+		h.Write([]byte(entry.Trace.SpanID))
+		h.Write([]byte(entry.Trace.ParentSpanID))
+		h.Write([]byte(entry.Trace.SpanType))
+		h.Write([]byte(entry.Trace.SpanName))
+
+		// Include tool call details if present
+		if entry.Trace.ToolCall != nil {
+			h.Write([]byte(entry.Trace.ToolCall.ID))
+			h.Write([]byte(entry.Trace.ToolCall.Type))
+			h.Write([]byte(entry.Trace.ToolCall.Function.Name))
+			h.Write([]byte(entry.Trace.ToolCall.Function.ArgumentsHash))
+		}
+
+		// Include tool result details if present
+		if entry.Trace.ToolResult != nil {
+			h.Write([]byte(entry.Trace.ToolResult.ToolCallID))
+			h.Write([]byte(entry.Trace.ToolResult.ContentHash))
+			h.Write([]byte(strconv.FormatBool(entry.Trace.ToolResult.IsError)))
+		}
+	}
+
 	h.Write([]byte(entry.PrevHash))
 
 	return hex.EncodeToString(h.Sum(nil))
