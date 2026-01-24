@@ -3,6 +3,8 @@ package proxy
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -13,23 +15,34 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/aiblackbox/proxy/internal/audit"
-	"github.com/aiblackbox/proxy/internal/config"
-	"github.com/aiblackbox/proxy/internal/models"
+	"github.com/jnd-labs/aiblackbox/internal/audit"
+	"github.com/jnd-labs/aiblackbox/internal/config"
+	"github.com/jnd-labs/aiblackbox/internal/media"
+	"github.com/jnd-labs/aiblackbox/internal/models"
+	"github.com/jnd-labs/aiblackbox/internal/trace"
 )
 
 // Handler implements the reverse proxy with named endpoint routing and audit logging
 type Handler struct {
 	config         *config.Config
 	auditWorker    *audit.Worker
+	mediaExtractor *media.Extractor
 	nextSequenceID uint64 // Atomic counter for sequence IDs
 }
 
 // NewHandler creates a new proxy handler
 func NewHandler(cfg *config.Config, auditWorker *audit.Worker) *Handler {
+	// Initialize media extractor
+	mediaExtractor := media.NewExtractor(
+		cfg.Media.EnableExtraction,
+		cfg.Media.MinSizeKB,
+		cfg.Media.StoragePath,
+	)
+
 	return &Handler{
-		config:      cfg,
-		auditWorker: auditWorker,
+		config:         cfg,
+		auditWorker:    auditWorker,
+		mediaExtractor: mediaExtractor,
 	}
 }
 
@@ -140,6 +153,89 @@ func (h *Handler) getNextSequenceID() uint64 {
 	return atomic.AddUint64(&h.nextSequenceID, 1) - 1
 }
 
+// extractMediaFromBodies extracts Base64 images from request and response bodies
+// Returns modified bodies and media references
+func (h *Handler) extractMediaFromBodies(requestBody, responseBody string, sequenceID uint64) (
+	modifiedReqBody string, reqMedia []models.MediaReference,
+	modifiedRespBody string, respMedia []models.MediaReference,
+) {
+	var err error
+
+	// Extract from request body
+	modifiedReqBody, reqMedia, err = h.mediaExtractor.ExtractFromBody(requestBody, sequenceID, "request")
+	if err != nil {
+		log.Printf("WARNING: Media extraction from request failed: seq=%d, error=%v", sequenceID, err)
+		modifiedReqBody = requestBody
+		reqMedia = nil
+	}
+
+	// Extract from response body
+	modifiedRespBody, respMedia, err = h.mediaExtractor.ExtractFromBody(responseBody, sequenceID, "response")
+	if err != nil {
+		log.Printf("WARNING: Media extraction from response failed: seq=%d, error=%v", sequenceID, err)
+		modifiedRespBody = responseBody
+		respMedia = nil
+	}
+
+	return modifiedReqBody, reqMedia, modifiedRespBody, respMedia
+}
+
+// extractTraceContext extracts distributed tracing metadata from request headers
+// Returns nil if tracing headers are not present (backward compatibility)
+func (h *Handler) extractTraceContext(r *http.Request) *models.TraceContext {
+	traceID := r.Header.Get("X-Trace-ID")
+	spanID := r.Header.Get("X-Span-ID")
+	parentSpanID := r.Header.Get("X-Parent-Span-ID")
+
+	// If no trace headers present, return nil for backward compatibility
+	if traceID == "" && spanID == "" {
+		return nil
+	}
+
+	// Generate trace ID if missing but span ID is present
+	if traceID == "" && spanID != "" {
+		traceID = generateTraceID()
+		log.Printf("INFO: Generated TraceID for request with SpanID: trace=%s, span=%s", traceID, spanID)
+	}
+
+	// Generate span ID if missing but trace ID is present
+	if spanID == "" && traceID != "" {
+		spanID = generateSpanID()
+		log.Printf("INFO: Generated SpanID for request with TraceID: trace=%s, span=%s", traceID, spanID)
+	}
+
+	return &models.TraceContext{
+		TraceID:      traceID,
+		SpanID:       spanID,
+		ParentSpanID: parentSpanID,
+		// SpanType, ToolCall, ToolResult will be populated during response processing
+	}
+}
+
+// generateTraceID generates a 128-bit (32 hex chars) trace identifier
+// Format matches OpenTelemetry specification
+func generateTraceID() string {
+	bytes := make([]byte, 16) // 128 bits
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to timestamp-based ID if random fails
+		log.Printf("WARNING: Failed to generate random trace ID: %v", err)
+		return fmt.Sprintf("%032x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(bytes)
+}
+
+// generateSpanID generates a 64-bit (16 hex chars) span identifier
+// Format matches OpenTelemetry specification
+func generateSpanID() string {
+	bytes := make([]byte, 8) // 64 bits
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to timestamp-based ID if random fails
+		log.Printf("WARNING: Failed to generate random span ID: %v", err)
+		return fmt.Sprintf("%016x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(bytes)
+}
+
 // handleRegularResponse handles non-streaming responses with immediate audit finalization
 func (h *Handler) handleRegularResponse(
 	w http.ResponseWriter,
@@ -163,28 +259,46 @@ func (h *Handler) handleRegularResponse(
 	// Assign sequence ID
 	sequenceID := h.getNextSequenceID()
 
+	// Extract media from request and response bodies
+	modifiedReqBody, reqMedia, modifiedRespBody, respMedia := h.extractMediaFromBodies(
+		string(requestBody),
+		capturer.Body(),
+		sequenceID,
+	)
+
+	// Extract trace context from headers
+	traceContext := h.extractTraceContext(r)
+
+	// Enrich trace context with tool call/result detection
+	if traceContext != nil {
+		trace.EnrichTraceContext(traceContext, string(requestBody), capturer.Body())
+	}
+
 	// Create audit entry with complete data
 	entry := &models.AuditEntry{
 		Timestamp:  startTime,
 		Endpoint:   endpointName,
 		SequenceID: sequenceID,
 		Request: models.RequestDetails{
-			Method:        r.Method,
-			Path:          actualPath,
-			Headers:       h.cloneHeaders(r.Header),
-			Body:          string(requestBody),
-			ContentLength: r.ContentLength,
+			Method:          r.Method,
+			Path:            actualPath,
+			Headers:         h.cloneHeaders(r.Header),
+			Body:            modifiedReqBody,
+			ContentLength:   r.ContentLength,
+			MediaReferences: reqMedia,
 		},
 		Response: models.ResponseDetails{
-			StatusCode:    capturer.StatusCode(),
-			Headers:       h.cloneHeaders(capturer.Headers()),
-			Body:          capturer.Body(),
-			ContentLength: int64(len(capturer.Body())),
-			Duration:      duration,
-			IsStreaming:   isStreaming,
-			IsComplete:    capturer.IsComplete(),
-			Error:         capturer.Error(),
+			StatusCode:      capturer.StatusCode(),
+			Headers:         h.cloneHeaders(capturer.Headers()),
+			Body:            modifiedRespBody,
+			ContentLength:   int64(len(capturer.Body())),
+			Duration:        duration,
+			IsStreaming:     isStreaming,
+			IsComplete:      capturer.IsComplete(),
+			Error:           capturer.Error(),
+			MediaReferences: respMedia,
 		},
+		Trace: traceContext,
 	}
 
 	// Send to audit worker (non-blocking due to buffered channel)
@@ -209,6 +323,9 @@ func (h *Handler) handleStreamingResponse(
 	ctx, cancel := context.WithTimeout(r.Context(), streamTimeout)
 	defer cancel()
 
+	// Extract trace context from headers (do this before callback closure)
+	traceContext := h.extractTraceContext(r)
+
 	// Create streaming response capturer with buffer limits
 	capturer := NewStreamingResponseCapturer(w, ctx, h.config.Streaming.MaxAuditBodySize)
 
@@ -225,34 +342,55 @@ func (h *Handler) handleStreamingResponse(
 		// Calculate total duration
 		duration := time.Since(startTime)
 
+		// Extract media from request and response bodies
+		modifiedReqBody, reqMedia, modifiedRespBody, respMedia := h.extractMediaFromBodies(
+			string(requestBody),
+			capturer.Body(),
+			sequenceID,
+		)
+
+		// Enrich trace context with tool call/result detection
+		if traceContext != nil {
+			trace.EnrichTraceContext(traceContext, string(requestBody), capturer.Body())
+		}
+
 		// Create audit entry with finalized data
 		entry := &models.AuditEntry{
 			Timestamp:  startTime,
 			Endpoint:   endpointName,
 			SequenceID: sequenceID,
 			Request: models.RequestDetails{
-				Method:        r.Method,
-				Path:          actualPath,
-				Headers:       h.cloneHeaders(r.Header),
-				Body:          string(requestBody),
-				ContentLength: r.ContentLength,
+				Method:          r.Method,
+				Path:            actualPath,
+				Headers:         h.cloneHeaders(r.Header),
+				Body:            modifiedReqBody,
+				ContentLength:   r.ContentLength,
+				MediaReferences: reqMedia,
 			},
 			Response: models.ResponseDetails{
-				StatusCode:    capturer.StatusCode(),
-				Headers:       h.cloneHeaders(capturer.Headers()),
-				Body:          capturer.Body(),
-				ContentLength: int64(len(capturer.Body())),
-				Duration:      duration,
-				IsStreaming:   true,
-				IsComplete:    capturer.IsComplete(),
-				Error:         capturer.Error(),
-				Truncated:     capturer.IsTruncated(),
+				StatusCode:       capturer.StatusCode(),
+				Headers:          h.cloneHeaders(capturer.Headers()),
+				Body:             modifiedRespBody,
+				ContentLength:    int64(len(capturer.Body())),
+				Duration:         duration,
+				IsStreaming:      true,
+				IsComplete:       capturer.IsComplete(),
+				Error:            capturer.Error(),
+				Truncated:        capturer.IsTruncated(),
 				TruncatedAtBytes: capturer.TruncatedAtBytes(),
+				MediaReferences:  respMedia,
 			},
+			Trace: traceContext,
 		}
 
 		// Send to audit worker
 		h.auditWorker.Log(entry)
+
+		// Log media extraction if any
+		if len(reqMedia) > 0 || len(respMedia) > 0 {
+			log.Printf("INFO: Media extracted: endpoint=%s, seq=%d, request_images=%d, response_images=%d",
+				endpointName, sequenceID, len(reqMedia), len(respMedia))
+		}
 
 		// Log completion with appropriate level
 		if entry.Response.IsComplete {

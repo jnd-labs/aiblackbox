@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/aiblackbox/proxy/internal/models"
+	"github.com/jnd-labs/aiblackbox/internal/models"
 )
 
 // FileStorage implements Storage interface using JSON Lines format

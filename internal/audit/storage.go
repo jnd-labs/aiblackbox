@@ -1,7 +1,7 @@
 package audit
 
 import (
-	"github.com/aiblackbox/proxy/internal/models"
+	"github.com/jnd-labs/aiblackbox/internal/models"
 )
 
 // Storage defines the interface for persisting audit entries

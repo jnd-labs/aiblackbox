@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/aiblackbox/proxy/internal/models"
+	"github.com/jnd-labs/aiblackbox/internal/models"
 )
 
 // Worker processes audit entries asynchronously with cryptographic hash chaining

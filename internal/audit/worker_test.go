@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aiblackbox/proxy/internal/models"
+	"github.com/jnd-labs/aiblackbox/internal/models"
 )
 
 // mockStorage is a test implementation of Storage interface

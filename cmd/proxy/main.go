@@ -10,9 +10,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/aiblackbox/proxy/internal/audit"
-	"github.com/aiblackbox/proxy/internal/config"
-	"github.com/aiblackbox/proxy/internal/proxy"
+	"github.com/jnd-labs/aiblackbox/internal/audit"
+	"github.com/jnd-labs/aiblackbox/internal/config"
+	"github.com/jnd-labs/aiblackbox/internal/proxy"
 )
 
 const (

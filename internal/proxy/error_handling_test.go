@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aiblackbox/proxy/internal/audit"
+	"github.com/jnd-labs/aiblackbox/internal/audit"
 )
 
 // TestErrorHandling_UpstreamError verifies handling of upstream server errors

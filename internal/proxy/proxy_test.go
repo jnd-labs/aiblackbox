@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aiblackbox/proxy/internal/audit"
-	"github.com/aiblackbox/proxy/internal/config"
-	"github.com/aiblackbox/proxy/internal/models"
+	"github.com/jnd-labs/aiblackbox/internal/audit"
+	"github.com/jnd-labs/aiblackbox/internal/config"
+	"github.com/jnd-labs/aiblackbox/internal/models"
 )
 
 // TestHandlerRegularRequest verifies regular (non-streaming) request handling
