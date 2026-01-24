@@ -1,0 +1,52 @@
+server:
+  # Port on which the proxy listens for incoming requests
+  port: 8080
+
+  # Genesis seed used for the first hash in the audit chain
+  # IMPORTANT: This should be unique per deployment for maximum security
+  genesis_seed: "aiblackbox-default-seed"
+
+endpoints:
+  # Named endpoint for OpenAI API
+  - name: "openai"
+    target: "https://api.openai.com/v1"
+
+  # Named endpoint for local LLM (e.g., Ollama)
+  - name: "local"
+    target: "http://localhost:11434/v1"
+
+  # Named endpoint for Azure OpenAI
+  # - name: "azure"
+  #   target: "https://your-resource.openai.azure.com/openai/deployments/your-deployment"
+
+  - name: "test"
+    target: "https://httpbin.org/anything"
+
+storage:
+  # Path to the audit log file (JSON Lines format)
+  # Each line is a complete JSON object representing one audit entry
+  path: "./logs/audit.jsonl"
+
+streaming:
+  # Maximum response body size to capture in audit logs (in bytes)
+  # Larger responses are truncated in logs but fully forwarded to clients
+  # Default: 10485760 (10 MB)
+  max_audit_body_size: 10485760
+
+  # Maximum duration to wait for a streaming response to complete (in seconds)
+  # Streams exceeding this timeout are force-finalized with a timeout marker
+  # Default: 300 (5 minutes)
+  stream_timeout: 300
+
+  # Enable sequence tracking for out-of-order stream completions
+  # Maintains hash chain integrity when concurrent streams complete out of order
+  # Default: true
+  enable_sequence_tracking: true
+
+# Environment variable overrides (use ABB_ prefix):
+# ABB_SERVER_PORT=9000
+# ABB_SERVER_GENESIS_SEED="your-secret-seed"
+# ABB_STORAGE_PATH="/var/log/aiblackbox/audit.jsonl"
+# ABB_STREAMING_MAX_AUDIT_BODY_SIZE=20971520
+# ABB_STREAMING_STREAM_TIMEOUT=600
+# ABB_STREAMING_ENABLE_SEQUENCE_TRACKING=false

@@ -30,3 +30,6 @@ logs/
 
 # Dependency directories
 vendor/
+
+*.md
+!**/README.md
