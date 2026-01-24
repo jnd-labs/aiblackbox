@@ -12,6 +12,7 @@ type Config struct {
 	Endpoints []EndpointConfig `mapstructure:"endpoints"`
 	Storage   StorageConfig    `mapstructure:"storage"`
 	Streaming StreamingConfig  `mapstructure:"streaming"`
+	Media     MediaConfig      `mapstructure:"media"`
 }
 
 // ServerConfig contains server-level settings
@@ -90,6 +91,9 @@ func Load() (*Config, error) {
 	v.SetDefault("streaming.max_audit_body_size", 10485760) // 10 MB
 	v.SetDefault("streaming.stream_timeout", 300)           // 5 minutes
 	v.SetDefault("streaming.enable_sequence_tracking", true)
+	v.SetDefault("media.enable_extraction", true)    // Enable media extraction
+	v.SetDefault("media.min_size_kb", 100)           // 100 KB minimum
+	v.SetDefault("media.storage_path", "./logs/media") // Media storage directory
 
 	// Read config file
 	if err := v.ReadInConfig(); err != nil {
@@ -154,6 +158,15 @@ func (c *Config) Validate() error {
 
 	if c.Streaming.StreamTimeout <= 0 {
 		return fmt.Errorf("streaming.stream_timeout must be positive")
+	}
+
+	// Validate media configuration
+	if c.Media.MinSizeKB < 0 {
+		return fmt.Errorf("media.min_size_kb cannot be negative")
+	}
+
+	if c.Media.StoragePath == "" && c.Media.EnableExtraction {
+		return fmt.Errorf("media.storage_path cannot be empty when extraction is enabled")
 	}
 
 	return nil

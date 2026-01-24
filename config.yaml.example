@@ -43,6 +43,22 @@ streaming:
   # Default: true
   enable_sequence_tracking: true
 
+media:
+  # Enable extraction of large Base64-encoded images to separate files
+  # When disabled, all content is stored inline in the audit log
+  # Default: true
+  enable_extraction: true
+
+  # Minimum size (in KB) for media to be extracted
+  # Base64 images smaller than this will remain inline
+  # Default: 100 (100 KB)
+  min_size_kb: 100
+
+  # Directory where extracted media files will be stored
+  # Files organized by date: {storage_path}/{YYYY-MM-DD}/seq_{N}_{type}_{index}.{ext}
+  # Default: "./logs/media"
+  storage_path: "./logs/media"
+
 # Environment variable overrides (use ABB_ prefix):
 # ABB_SERVER_PORT=9000
 # ABB_SERVER_GENESIS_SEED="your-secret-seed"
@@ -50,3 +66,6 @@ streaming:
 # ABB_STREAMING_MAX_AUDIT_BODY_SIZE=20971520
 # ABB_STREAMING_STREAM_TIMEOUT=600
 # ABB_STREAMING_ENABLE_SEQUENCE_TRACKING=false
+# ABB_MEDIA_ENABLE_EXTRACTION=true
+# ABB_MEDIA_MIN_SIZE_KB=100
+# ABB_MEDIA_STORAGE_PATH="./logs/media"
