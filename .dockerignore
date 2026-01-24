@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Build artifacts
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test files
+*_test.go
+*_test.go
+
+# Documentation
+*.md
+!README.md
+
+# Logs
+logs/
+*.log
+
+# Config files (user should mount their own)
+config.yaml
+
+# OS files
+.DS_Store
+Thumbs.db
