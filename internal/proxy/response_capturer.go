@@ -1,7 +1,11 @@
 package proxy
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -204,6 +208,41 @@ func (rc *ResponseCapturer) Body() string {
 		body += "\n[TRUNCATED: response exceeded max_audit_body_size limit]"
 	}
 	return body
+}
+
+// DecompressedBody returns the response body, decompressing it if Content-Encoding is gzip
+// Returns the original body if not gzipped or if decompression fails
+func (rc *ResponseCapturer) DecompressedBody() string {
+	body := rc.Body()
+
+	// Check if the response is gzipped
+	contentEncoding := rc.headers.Get("Content-Encoding")
+	if !strings.Contains(strings.ToLower(contentEncoding), "gzip") {
+		// Not gzipped, return as-is
+		return body
+	}
+
+	// Check for gzip magic bytes (0x1f 0x8b)
+	if len(body) < 2 || body[0] != '\x1f' || body[1] != '\x8b' {
+		// Not gzip format, return as-is
+		return body
+	}
+
+	// Decompress the body
+	reader, err := gzip.NewReader(bytes.NewReader([]byte(body)))
+	if err != nil {
+		log.Printf("WARNING: Failed to create gzip reader: %v", err)
+		return body
+	}
+	defer reader.Close()
+
+	decompressed, err := io.ReadAll(reader)
+	if err != nil {
+		log.Printf("WARNING: Failed to decompress response body: %v", err)
+		return body
+	}
+
+	return string(decompressed)
 }
 
 // Headers returns the captured headers

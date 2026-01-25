@@ -101,7 +101,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
-		req.URL.Path = actualPath
+		// Combine target's base path with the actual request path
+		req.URL.Path = singleJoiningSlash(targetURL.Path, actualPath)
 		req.Host = targetURL.Host
 	}
 
@@ -139,6 +140,32 @@ func (h *Handler) parseEndpoint(path string) (string, string) {
 	return endpointName, actualPath
 }
 
+// singleJoiningSlash joins two URL paths with a single slash
+// Handles cases where either path has or doesn't have trailing/leading slashes
+func singleJoiningSlash(a, b string) string {
+	aslash := strings.HasSuffix(a, "/")
+	bslash := strings.HasPrefix(b, "/")
+	switch {
+	case aslash && bslash:
+		return a + b[1:]
+	case !aslash && !bslash:
+		return a + "/" + b
+	}
+	return a + b
+}
+
+// sensitiveHeaders lists headers that should be masked in audit logs
+var sensitiveHeaders = map[string]bool{
+	"authorization":       true,
+	"cookie":              true,
+	"set-cookie":          true,
+	"x-api-key":           true,
+	"api-key":             true,
+	"x-auth-token":        true,
+	"x-csrf-token":        true,
+	"proxy-authorization": true,
+}
+
 // cloneHeaders creates a copy of HTTP headers
 func (h *Handler) cloneHeaders(headers http.Header) map[string][]string {
 	clone := make(map[string][]string, len(headers))
@@ -146,6 +173,67 @@ func (h *Handler) cloneHeaders(headers http.Header) map[string][]string {
 		clone[k] = append([]string(nil), v...)
 	}
 	return clone
+}
+
+// sanitizeHeaders masks sensitive header values for audit logging
+// Preserves header structure but redacts sensitive data like bearer tokens
+func (h *Handler) sanitizeHeaders(headers map[string][]string) map[string][]string {
+	sanitized := make(map[string][]string, len(headers))
+	for k, values := range headers {
+		lowerKey := strings.ToLower(k)
+		if sensitiveHeaders[lowerKey] {
+			// Mask sensitive headers but preserve structure
+			masked := make([]string, len(values))
+			for i, v := range values {
+				masked[i] = h.maskSensitiveValue(v)
+			}
+			sanitized[k] = masked
+		} else {
+			// Copy non-sensitive headers as-is
+			sanitized[k] = append([]string(nil), values...)
+		}
+	}
+	return sanitized
+}
+
+// sanitizeResponseHeaders sanitizes response headers and removes Content-Encoding
+// if the body was decompressed for audit logging
+func (h *Handler) sanitizeResponseHeaders(headers map[string][]string, bodyWasDecompressed bool) map[string][]string {
+	sanitized := h.sanitizeHeaders(headers)
+
+	// If we decompressed the body for the audit log, remove Content-Encoding
+	// to avoid confusion (the audit log body is now decompressed)
+	if bodyWasDecompressed {
+		delete(sanitized, "Content-Encoding")
+	}
+
+	return sanitized
+}
+
+// maskSensitiveValue masks a sensitive header value
+// Shows prefix and last 4 characters for debugging while hiding the secret
+func (h *Handler) maskSensitiveValue(value string) string {
+	if len(value) == 0 {
+		return "[EMPTY]"
+	}
+
+	// For Bearer tokens, mask the token but keep the "Bearer" prefix
+	if strings.HasPrefix(value, "Bearer ") || strings.HasPrefix(value, "bearer ") {
+		token := value[7:] // Remove "Bearer " prefix
+		if len(token) <= 8 {
+			return "Bearer [REDACTED]"
+		}
+		// Show prefix and last 4 chars: "Bearer sk-...abc123"
+		return fmt.Sprintf("Bearer %s...%s", token[:3], token[len(token)-4:])
+	}
+
+	// For other sensitive values, show only length
+	if len(value) <= 8 {
+		return "[REDACTED]"
+	}
+
+	// Show first 3 and last 4 characters
+	return fmt.Sprintf("%s...%s", value[:3], value[len(value)-4:])
 }
 
 // getNextSequenceID atomically increments and returns the next sequence ID
@@ -180,28 +268,24 @@ func (h *Handler) extractMediaFromBodies(requestBody, responseBody string, seque
 	return modifiedReqBody, reqMedia, modifiedRespBody, respMedia
 }
 
-// extractTraceContext extracts distributed tracing metadata from request headers
-// Returns nil if tracing headers are not present (backward compatibility)
+// extractTraceContext extracts or generates distributed tracing metadata
+// Hybrid approach:
+// - If trace headers present: Use them (explicit tracing)
+// - If no headers: Auto-generate for transparent tracing
 func (h *Handler) extractTraceContext(r *http.Request) *models.TraceContext {
 	traceID := r.Header.Get("X-Trace-ID")
 	spanID := r.Header.Get("X-Span-ID")
 	parentSpanID := r.Header.Get("X-Parent-Span-ID")
 
-	// If no trace headers present, return nil for backward compatibility
-	if traceID == "" && spanID == "" {
-		return nil
-	}
-
-	// Generate trace ID if missing but span ID is present
-	if traceID == "" && spanID != "" {
+	// Auto-generate trace ID if not provided (transparent tracing)
+	if traceID == "" {
 		traceID = generateTraceID()
-		log.Printf("INFO: Generated TraceID for request with SpanID: trace=%s, span=%s", traceID, spanID)
+		// Don't log for auto-generated - this is normal operation
 	}
 
-	// Generate span ID if missing but trace ID is present
-	if spanID == "" && traceID != "" {
+	// Auto-generate span ID if not provided
+	if spanID == "" {
 		spanID = generateSpanID()
-		log.Printf("INFO: Generated SpanID for request with TraceID: trace=%s, span=%s", traceID, spanID)
 	}
 
 	return &models.TraceContext{
@@ -209,6 +293,7 @@ func (h *Handler) extractTraceContext(r *http.Request) *models.TraceContext {
 		SpanID:       spanID,
 		ParentSpanID: parentSpanID,
 		// SpanType, ToolCall, ToolResult will be populated during response processing
+		Attributes: make(map[string]string),
 	}
 }
 
@@ -259,10 +344,27 @@ func (h *Handler) handleRegularResponse(
 	// Assign sequence ID
 	sequenceID := h.getNextSequenceID()
 
+	// Get decompressed response body for audit logging
+	responseBody := capturer.DecompressedBody()
+	bodyWasDecompressed := responseBody != capturer.Body()
+
+	// Detect and reconstruct streaming responses (SSE format)
+	// This handles cases where streaming wasn't detected from request headers
+	var streamingMetadata *models.StreamingMetadata
+	contentType := capturer.Headers().Get("Content-Type")
+	if strings.Contains(contentType, "text/event-stream") {
+		reconstructedBody, metadata := reconstructStreamResponse(responseBody, startTime)
+		if metadata != nil {
+			responseBody = reconstructedBody
+			streamingMetadata = metadata
+			isStreaming = true // Update flag for audit log
+		}
+	}
+
 	// Extract media from request and response bodies
 	modifiedReqBody, reqMedia, modifiedRespBody, respMedia := h.extractMediaFromBodies(
 		string(requestBody),
-		capturer.Body(),
+		responseBody,
 		sequenceID,
 	)
 
@@ -271,7 +373,7 @@ func (h *Handler) handleRegularResponse(
 
 	// Enrich trace context with tool call/result detection
 	if traceContext != nil {
-		trace.EnrichTraceContext(traceContext, string(requestBody), capturer.Body())
+		trace.EnrichTraceContext(traceContext, string(requestBody), responseBody)
 	}
 
 	// Create audit entry with complete data
@@ -282,21 +384,22 @@ func (h *Handler) handleRegularResponse(
 		Request: models.RequestDetails{
 			Method:          r.Method,
 			Path:            actualPath,
-			Headers:         h.cloneHeaders(r.Header),
+			Headers:         h.sanitizeHeaders(h.cloneHeaders(r.Header)),
 			Body:            modifiedReqBody,
 			ContentLength:   r.ContentLength,
 			MediaReferences: reqMedia,
 		},
 		Response: models.ResponseDetails{
-			StatusCode:      capturer.StatusCode(),
-			Headers:         h.cloneHeaders(capturer.Headers()),
-			Body:            modifiedRespBody,
-			ContentLength:   int64(len(capturer.Body())),
-			Duration:        duration,
-			IsStreaming:     isStreaming,
-			IsComplete:      capturer.IsComplete(),
-			Error:           capturer.Error(),
-			MediaReferences: respMedia,
+			StatusCode:        capturer.StatusCode(),
+			Headers:           h.sanitizeResponseHeaders(h.cloneHeaders(capturer.Headers()), bodyWasDecompressed),
+			Body:              modifiedRespBody,
+			ContentLength:     int64(len(responseBody)),
+			Duration:          duration,
+			IsStreaming:       isStreaming,
+			IsComplete:        capturer.IsComplete(),
+			Error:             capturer.Error(),
+			MediaReferences:   respMedia,
+			StreamingMetadata: streamingMetadata,
 		},
 		Trace: traceContext,
 	}
@@ -342,16 +445,23 @@ func (h *Handler) handleStreamingResponse(
 		// Calculate total duration
 		duration := time.Since(startTime)
 
+		// Get decompressed response body for audit logging
+		responseBody := capturer.DecompressedBody()
+		bodyWasDecompressed := responseBody != capturer.Body()
+
+		// Reconstruct streaming response from SSE deltas
+		reconstructedBody, streamingMetadata := reconstructStreamResponse(responseBody, startTime)
+
 		// Extract media from request and response bodies
 		modifiedReqBody, reqMedia, modifiedRespBody, respMedia := h.extractMediaFromBodies(
 			string(requestBody),
-			capturer.Body(),
+			reconstructedBody,
 			sequenceID,
 		)
 
 		// Enrich trace context with tool call/result detection
 		if traceContext != nil {
-			trace.EnrichTraceContext(traceContext, string(requestBody), capturer.Body())
+			trace.EnrichTraceContext(traceContext, string(requestBody), reconstructedBody)
 		}
 
 		// Create audit entry with finalized data
@@ -362,23 +472,24 @@ func (h *Handler) handleStreamingResponse(
 			Request: models.RequestDetails{
 				Method:          r.Method,
 				Path:            actualPath,
-				Headers:         h.cloneHeaders(r.Header),
+				Headers:         h.sanitizeHeaders(h.cloneHeaders(r.Header)),
 				Body:            modifiedReqBody,
 				ContentLength:   r.ContentLength,
 				MediaReferences: reqMedia,
 			},
 			Response: models.ResponseDetails{
-				StatusCode:       capturer.StatusCode(),
-				Headers:          h.cloneHeaders(capturer.Headers()),
-				Body:             modifiedRespBody,
-				ContentLength:    int64(len(capturer.Body())),
-				Duration:         duration,
-				IsStreaming:      true,
-				IsComplete:       capturer.IsComplete(),
-				Error:            capturer.Error(),
-				Truncated:        capturer.IsTruncated(),
-				TruncatedAtBytes: capturer.TruncatedAtBytes(),
-				MediaReferences:  respMedia,
+				StatusCode:        capturer.StatusCode(),
+				Headers:           h.sanitizeResponseHeaders(h.cloneHeaders(capturer.Headers()), bodyWasDecompressed),
+				Body:              modifiedRespBody,
+				ContentLength:     int64(len(reconstructedBody)),
+				Duration:          duration,
+				IsStreaming:       true,
+				IsComplete:        capturer.IsComplete(),
+				Error:             capturer.Error(),
+				Truncated:         capturer.IsTruncated(),
+				TruncatedAtBytes:  capturer.TruncatedAtBytes(),
+				MediaReferences:   respMedia,
+				StreamingMetadata: streamingMetadata,
 			},
 			Trace: traceContext,
 		}

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
+	"strconv"
 
 	"github.com/jnd-labs/aiblackbox/internal/models"
 )
@@ -185,9 +186,15 @@ func GenerateSpanName(spanType models.SpanType, toolCall *models.ToolCallInfo, t
 
 // EnrichTraceContext enriches a trace context with tool call/result information
 // This is called after the response is received to populate tool-related fields
+// Also adds metadata about auto-detected patterns
 func EnrichTraceContext(trace *models.TraceContext, requestBody, responseBody string) {
 	if trace == nil {
 		return
+	}
+
+	// Initialize attributes map if needed
+	if trace.Attributes == nil {
+		trace.Attributes = make(map[string]string)
 	}
 
 	// Detect tool calls in response
@@ -196,6 +203,12 @@ func EnrichTraceContext(trace *models.TraceContext, requestBody, responseBody st
 		trace.ToolCall = toolCall
 		trace.SpanType = models.SpanTypeToolCall
 		trace.SpanName = GenerateSpanName(models.SpanTypeToolCall, toolCall, nil)
+
+		// Add attributes for searchability
+		trace.Attributes["tool_name"] = toolCall.Function.Name
+		trace.Attributes["tool_call_id"] = toolCall.ID
+		trace.Attributes["detection"] = "auto"
+
 		log.Printf("INFO: Detected tool call: trace=%s, span=%s, tool=%s, call_id=%s",
 			trace.TraceID, trace.SpanID, toolCall.Function.Name, toolCall.ID)
 		return
@@ -207,6 +220,12 @@ func EnrichTraceContext(trace *models.TraceContext, requestBody, responseBody st
 		trace.ToolResult = toolResult
 		trace.SpanType = models.SpanTypeToolResult
 		trace.SpanName = GenerateSpanName(models.SpanTypeToolResult, nil, toolResult)
+
+		// Add attributes for linking
+		trace.Attributes["tool_call_id"] = toolResult.ToolCallID
+		trace.Attributes["is_error"] = boolToString(toolResult.IsError)
+		trace.Attributes["detection"] = "auto"
+
 		log.Printf("INFO: Detected tool result: trace=%s, span=%s, call_id=%s, is_error=%v",
 			trace.TraceID, trace.SpanID, toolResult.ToolCallID, toolResult.IsError)
 		return
@@ -216,4 +235,31 @@ func EnrichTraceContext(trace *models.TraceContext, requestBody, responseBody st
 	spanType := DetermineSpanType(requestBody, responseBody)
 	trace.SpanType = spanType
 	trace.SpanName = GenerateSpanName(spanType, nil, nil)
+
+	// Mark as auto-detected
+	trace.Attributes["detection"] = "auto"
+
+	// Add conversation metadata
+	convMetadata := ExtractConversationMetadata(requestBody)
+	if convMetadata != nil {
+		trace.Attributes["message_count"] = intToString(convMetadata.MessageCount)
+		trace.Attributes["multi_turn"] = boolToString(IsMultiTurnConversation(requestBody))
+
+		if convMetadata.ConversationID != "" {
+			trace.Attributes["conversation_id"] = convMetadata.ConversationID
+		}
+	}
+}
+
+// intToString converts int to string for attributes
+func intToString(i int) string {
+	return strconv.Itoa(i)
+}
+
+// boolToString converts boolean to string for attributes
+func boolToString(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }

@@ -21,19 +21,54 @@ type LogEntry struct {
 	Response struct {
 		Body       string `json:"body"`
 		StatusCode int    `json:"status_code"`
+		Error      string `json:"error,omitempty"`
+		IsComplete bool   `json:"is_complete"`
 	} `json:"response"`
-	PrevHash string `json:"prev_hash"`
-	Hash     string `json:"hash"`
+	// Trace field is now part of the integrity check
+	Trace    *TraceContext `json:"trace,omitempty"`
+	PrevHash string        `json:"prev_hash"`
+	Hash     string        `json:"hash"`
+}
+
+// TraceContext represents distributed tracing metadata
+type TraceContext struct {
+	TraceID      string          `json:"trace_id,omitempty"`
+	SpanID       string          `json:"span_id,omitempty"`
+	ParentSpanID string          `json:"parent_span_id,omitempty"`
+	SpanType     string          `json:"span_type,omitempty"`
+	SpanName     string          `json:"span_name,omitempty"`
+	ToolCall     *ToolCallInfo   `json:"tool_call,omitempty"`
+	ToolResult   *ToolResultInfo `json:"tool_result,omitempty"`
+}
+
+// ToolCallInfo represents a tool invocation
+type ToolCallInfo struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function FunctionCall `json:"function"`
+}
+
+// FunctionCall represents a function invocation
+type FunctionCall struct {
+	Name          string `json:"name"`
+	ArgumentsHash string `json:"arguments_hash"`
+}
+
+// ToolResultInfo represents the result of a tool execution
+type ToolResultInfo struct {
+	ToolCallID  string `json:"tool_call_id"`
+	ContentHash string `json:"content_hash"`
+	IsError     bool   `json:"is_error,omitempty"`
 }
 
 // Exit codes
 const (
-	ExitSuccess         = 0
-	ExitFileError       = 1
-	ExitChainBroken     = 2
-	ExitDataTampered    = 3
-	ExitParseError      = 4
-	ExitScanError       = 5
+	ExitSuccess      = 0
+	ExitFileError    = 1
+	ExitChainBroken  = 2
+	ExitDataTampered = 3
+	ExitParseError   = 4
+	ExitScanError    = 5
 )
 
 var (
@@ -129,13 +164,51 @@ func verifyLog(filename string) error {
 }
 
 // calculateHash computes the SHA-256 hash of a log entry
+// Must match the calculation in internal/audit/worker.go exactly
 func calculateHash(entry *LogEntry) string {
 	h := sha256.New()
+
+	// Write all components in the exact order as worker.go
 	h.Write([]byte(entry.Timestamp))
 	h.Write([]byte(entry.Endpoint))
 	h.Write([]byte(entry.Request.Body))
 	h.Write([]byte(entry.Response.Body))
 	fmt.Fprintf(h, "%d", entry.Response.StatusCode)
+	h.Write([]byte(entry.Response.Error))
+	if entry.Response.IsComplete {
+		h.Write([]byte("true"))
+	} else {
+		h.Write([]byte("false"))
+	}
+
+	// Include trace context if present (maintains backward compatibility)
+	if entry.Trace != nil {
+		h.Write([]byte(entry.Trace.TraceID))
+		h.Write([]byte(entry.Trace.SpanID))
+		h.Write([]byte(entry.Trace.ParentSpanID))
+		h.Write([]byte(entry.Trace.SpanType))
+		h.Write([]byte(entry.Trace.SpanName))
+
+		// Include tool call details if present
+		if entry.Trace.ToolCall != nil {
+			h.Write([]byte(entry.Trace.ToolCall.ID))
+			h.Write([]byte(entry.Trace.ToolCall.Type))
+			h.Write([]byte(entry.Trace.ToolCall.Function.Name))
+			h.Write([]byte(entry.Trace.ToolCall.Function.ArgumentsHash))
+		}
+
+		// Include tool result details if present
+		if entry.Trace.ToolResult != nil {
+			h.Write([]byte(entry.Trace.ToolResult.ToolCallID))
+			h.Write([]byte(entry.Trace.ToolResult.ContentHash))
+			if entry.Trace.ToolResult.IsError {
+				h.Write([]byte("true"))
+			} else {
+				h.Write([]byte("false"))
+			}
+		}
+	}
+
 	h.Write([]byte(entry.PrevHash))
 	return hex.EncodeToString(h.Sum(nil))
 }

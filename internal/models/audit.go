@@ -169,7 +169,7 @@ type RequestDetails struct {
 	// Path is the URL path after stripping the endpoint name
 	Path string `json:"path"`
 
-	// Headers contains all HTTP headers (sensitive headers like Authorization are included)
+	// Headers contains all HTTP headers (sensitive headers like Authorization are masked for security)
 	Headers map[string][]string `json:"headers"`
 
 	// Body is the raw request body (typically JSON for LLM APIs)
@@ -224,4 +224,24 @@ type ResponseDetails struct {
 	// MediaReferences contains information about extracted media files
 	// Populated when large Base64 images are detected and offloaded to separate storage
 	MediaReferences []MediaReference `json:"media_references,omitempty"`
+
+	// StreamingMetadata contains additional metadata for streaming responses
+	// Only populated when IsStreaming is true
+	StreamingMetadata *StreamingMetadata `json:"streaming_metadata,omitempty"`
+}
+
+// StreamingMetadata contains metadata about streaming (SSE) responses
+type StreamingMetadata struct {
+	// ChunksReceived is the total number of SSE data chunks received
+	ChunksReceived int `json:"chunks_received"`
+
+	// ReconstructedFromStream indicates the body was reconstructed from SSE deltas
+	// When true, the body contains the final consolidated response, not raw SSE stream
+	ReconstructedFromStream bool `json:"reconstructed_from_stream"`
+
+	// FirstChunkTime is when the first data chunk arrived (relative to request start)
+	FirstChunkTime time.Duration `json:"first_chunk_ms,omitempty"`
+
+	// LastChunkTime is when the last data chunk arrived (relative to request start)
+	LastChunkTime time.Duration `json:"last_chunk_ms,omitempty"`
 }
