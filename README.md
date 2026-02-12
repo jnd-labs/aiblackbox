@@ -53,7 +53,7 @@ media:
 docker run -p 8080:8080 \
   -v $(pwd)/config.yaml:/app/config.yaml \
   -v $(pwd)/logs:/app/logs \
-  aiblackbox/proxy:latest
+  jndlabs/aiblackbox:latest
 ```
 
 **Note:** The `logs` volume will contain both the audit log (`audit.jsonl`) and extracted media files (`media/`).
@@ -457,7 +457,7 @@ Each audit entry contains:
 version: '3.8'
 services:
   aiblackbox:
-    image: aiblackbox/proxy:latest
+    image: jndlabs/aiblackbox:latest
     ports:
       - "8080:8080"
     volumes:
@@ -472,11 +472,11 @@ services:
 
 ### Building from Source
 ```bash
-docker build -t aiblackbox/proxy:latest .
+docker build -t jndlabs/aiblackbox:latest .
 docker run -p 8080:8080 \
   -v $(pwd)/config.yaml:/app/config.yaml \
   -v $(pwd)/logs:/app/logs \
-  aiblackbox/proxy:latest
+  jndlabs/aiblackbox:latest
 ```
 
 ## 🤝 Contributing
